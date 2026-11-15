@@ -1,0 +1,25 @@
+# ===== 编译产物（Debug 目录由 ADS 生成，约 100+MB，不入库）=====
+Debug/
+*.o
+*.obj
+*.src
+*.d
+*.map
+*.elf
+*.hex
+*.abs
+*.mdf
+*.opt
+*.comment
+*.pbi
+
+# ===== ADS / Eclipse 临时文件 =====
+*.bak
+*.log
+*.tmp
+.metadata/
+.settings/.indexer*
+
+# ===== 系统 =====
+Thumbs.db
+desktop.ini
