@@ -8,14 +8,16 @@
 
 #include "zf_common_headfile.h"
 
-#define jidian_search_line 110     // 起始行(跳过最底约 10 行近场, 抬高后底部易缺角/噪声)
-#define search_start_line  110     // 从第 110 行(实际扫描 109)向上追踪, 最底几行用最底有效行填平
+#define jidian_search_line 110     // 基点行搜索起点(最底有效行 = 109); 该行找不到边线时从这里往上逐行试
+#define search_start_line  110     // 追踪起点行的名义值(109 行); 实际起点行见 search_top_row
+#define JIDIAN_SCAN_TOP    70      // 自适应基点搜索下限: 底部整行全白时最多往上找 40 行
 #define search_end_line    10      // 追踪到第 10 行为止(更远不追踪)。抬高+看远后可往上扩(改小), 让第二拐点更早出现
-#define MID_W              93      // 车体正对时的中线目标值
+#define MID_W              90          // 车体正对时的中线目标值(2026-11-20 抬高摄像头后实测直线中线=83, 原 93)
 
 #define EDGE_WINDOW_DEF    2       // 追踪窗口半宽(默认 1x7 窗口), 菜单 WIN
 #define LOST_EXTRA_DEF     7       // 丢线后扩大窗口的额外半宽(±(WIN+LOST) 再找一次), 菜单 LOST
 #define MID_SLEW_DEF       12      // 时序限幅: 每帧中线最多变化多少像素(抗噪声抖动), 菜单 M_SLEW
+#define MID_WEIGHT_RATIO_DEF 0.30f // 中线加权: 远端权重/近端权重, 提前打弯调小, 出弯晚调大, 菜单 MW_RATIO
 #define EDGE_OFFSCREEN     0xFF    // 补线出屏时边线数组的标记(屏幕不画, 中线不受影响)
 
 extern uint8 base_image[MT9V03X_H][MT9V03X_W];   // 原始灰度
@@ -23,6 +25,8 @@ extern uint8 image[MT9V03X_H][MT9V03X_W];        // 二值图: 0=黑(背景) 255=白(赛
 extern uint8 img_threshold;
 extern uint8 left_jidian;
 extern uint8 right_jidian;
+extern uint8 jidian_valid;                 // 1=本帧基点来自真实边线跳变, 0=沿用上一帧/兜底值
+extern uint8 search_top_row;               // 本帧实际追踪起点行(109=没跳过任何行)
 extern uint8 left_line_list[MT9V03X_H];
 extern uint8 right_line_list[MT9V03X_H];
 extern uint8 mid_line_list[MT9V03X_H];
@@ -32,6 +36,7 @@ extern float final_mid_line;
 extern int edge_window;                               // WIN: 边线追踪窗口半宽
 extern int lost_extra;                                // LOST: 丢线后扩大窗口的额外半宽
 extern int mid_slew;                                  // M_SLEW: 每帧中线最大变化(像素)
+extern float mid_weight_ratio;                        // MW_RATIO: 远端权重/近端权重
 
 //==================== 切点 / 圆环点标记(方案A) ====================
 extern uint8 tangent_point_l_active;   // 1=左边线正在切线外推(有切点)

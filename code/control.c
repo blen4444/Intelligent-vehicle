@@ -29,6 +29,7 @@ float STEER_CENTER_RATIO = STEER_CENTER_RATIO_DEF;
 float STEER_KNEE_ERR     = STEER_KNEE_ERR_DEF;
 float STEER_FF_K         = STEER_FF_K_DEF;
 float STEER_FF_DEAD      = STEER_FF_DEAD_DEF;
+float STEER_FF_GAIN_SPD  = STEER_FF_GAIN_SPD_DEF;
 float STEER_KD           = STEER_KD_DEF;
 int   STEER_SLEW         = STEER_SLEW_DEF;
 int   duoji_mid          = DUOJI_MID_DEF;
@@ -43,6 +44,7 @@ void control_param_defaults(void)
     STEER_KNEE_ERR     = STEER_KNEE_ERR_DEF;
     STEER_FF_K         = STEER_FF_K_DEF;
     STEER_FF_DEAD      = STEER_FF_DEAD_DEF;
+    STEER_FF_GAIN_SPD  = STEER_FF_GAIN_SPD_DEF;
     STEER_KD           = STEER_KD_DEF;
     STEER_SLEW         = STEER_SLEW_DEF;
     duoji_mid          = DUOJI_MID_DEF;
@@ -172,9 +174,21 @@ void control_publish_vision(float mid, const uint8 *mid_rows,
     else filtered_delta = 0.0f;
     previous_tick = sys_tick; previous_error = error;
     control_frames[next].error_delta = Limit_float(-10.0f, filtered_delta, 10.0f);
+    /* near/far 两段相对"实际追踪起点行"取, 不再写死 85~105 / 55~75:
+     * 摄像头压低时底部整行全白, find_jidian 会把起点行往上抬(search_top_row < 109),
+     * 写死行号会取到根本没跟踪的行 -> geometry_valid 恒 0 -> 曲率前馈与弯道减速失效。
+     * 默认 search_top_row = 109 时等价于原来的 85~105 / 55~75。 */
+    int top = (int)search_top_row;
+    int near_first = top - 24, near_last = top - 4;
+    int far_first  = top - 54, far_last  = top - 34;
     float near_mid = mid, far_mid = mid;
-    uint8 near_ok = control_band_mean(mid_rows, left_rows, right_rows, 85, 105, &near_mid);
-    uint8 far_ok = control_band_mean(mid_rows, left_rows, right_rows, 55, 75, &far_mid);
+    uint8 near_ok = 0, far_ok = 0;
+    if(near_first < (int)search_end_line) near_first = (int)search_end_line;
+    if(far_first  < (int)search_end_line) far_first  = (int)search_end_line;
+    if(near_last  > top) near_last = top;
+    if(far_last   > top) far_last  = top;
+    if(far_last  >= far_first)  far_ok  = control_band_mean(mid_rows, left_rows, right_rows, far_first,  far_last,  &far_mid);
+    if(near_last >= near_first) near_ok = control_band_mean(mid_rows, left_rows, right_rows, near_first, near_last, &near_mid);
     control_frames[next].mid = mid;
     control_frames[next].near_mid = near_mid;
     control_frames[next].far_mid = far_mid;
@@ -367,7 +381,13 @@ void turn(float mid, float k)
         float mag = (bend_f < 0.0f) ? -bend_f : bend_f;
         if(mag > STEER_FF_DEAD)
         {
-            float ff = STEER_FF_K * (mag - STEER_FF_DEAD);
+            /* 前馈随速度缩放: 实测 400 档提前 40cm、1600 档提前 10cm,
+             * 说明几何前馈在低速时相对过强(慢速时舵机有充足时间把预打量
+             * 全部打完, 高速时被 STEER_SLEW 拖慢反而显得刚好)。
+             * 低速压低前馈、高速恢复满额, 让各档入弯时机一致。 */
+            float ff_gain = spd * STEER_FF_GAIN_SPD;   // 400档=0.25, 1600档=1.0
+            if(ff_gain > 1.0f) ff_gain = 1.0f;
+            float ff = STEER_FF_K * (mag - STEER_FF_DEAD) * ff_gain;
             target += (bend_f < 0.0f) ? -ff : ff;
         }
     }
