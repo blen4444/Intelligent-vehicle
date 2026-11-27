@@ -16,9 +16,21 @@
 
 #define EDGE_WINDOW_DEF    2       // 追踪窗口半宽(默认 1x7 窗口), 菜单 WIN
 #define LOST_EXTRA_DEF     7       // 丢线后扩大窗口的额外半宽(±(WIN+LOST) 再找一次), 菜单 LOST
-#define MID_SLEW_DEF       12      // 时序限幅: 每帧中线最多变化多少像素(抗噪声抖动), 菜单 M_SLEW
+#define MID_SLEW_DEF       8       // 时序限幅: 每帧中线最多变化多少像素(抗噪声抖动), 菜单 M_SLEW
 #define MID_WEIGHT_RATIO_DEF 0.30f // 中线加权: 远端权重/近端权重, 提前打弯调小, 出弯晚调大, 菜单 MW_RATIO
 #define EDGE_OFFSCREEN     0xFF    // 补线出屏时边线数组的标记(屏幕不画, 中线不受影响)
+
+//==================== 赛道外剔除(只关注当前赛道) ====================
+// 场地上赛道外常有大片白色(背景板/白纸/反光), 它的边界也是"黑<->白"跳变,
+// 追踪时会沿着它跑偏。下面几个约束用来把"赛道外白区"当丢线剔掉:
+#define TRACK_W_MIN        14      // 有效左右边线间距下限(像素), 再小是噪声/伪边
+#define TRACK_W_MAX        165     // 有效间距上限(像素), 超过说明某侧跑到赛道外白区
+#define TRACK_W_STEP       26      // 相邻两行间距最大突变(像素), 超过则丢弃偏离更大的一侧
+#define TRACK_DEAD_RUN     10      // 远端连续多少行双侧都失败后停止追踪(不再画远端乱线)
+#define TRACK_DEAD_NEAR    35      // 停止判定只在距起点行这么多行以外生效(保护近端)
+#define TRACK_LOST_MAX     20      // 单侧连续丢线超过这么多行后停止切线外推(防止外推漂到赛道外)
+#define TRACK_SLOPE_SMOOTH 2       // 切线斜率平滑系数: (slope*N + 新值)/(N+1), 越大越稳
+#define MID_CONF_SINGLE    0.35f   // 单侧外推行的中线权重系数(双侧真值=1.0)
 
 extern uint8 base_image[MT9V03X_H][MT9V03X_W];   // 原始灰度
 extern uint8 image[MT9V03X_H][MT9V03X_W];        // 二值图: 0=黑(背景) 255=白(赛道)
@@ -71,13 +83,13 @@ extern uint8 zt_state;               // 当前 FSM 状态
 extern uint8 zt_side;                // 环所在侧: 0=左 1=右
 
 // 判据阈值(菜单可调, 默认值见 *_DEF)
-#define RING_LOSS_MIN_DEF     30    // R_LOSS  : 环岛候选的单侧连续丢线行数下限
-#define ZT_NEAR_ROW_DEF       88    // NEAR_ROW: 近端拐点最低行(y>=该值才算"近端", 排除远处弯道误判)
+#define RING_LOSS_MIN_DEF     22    // R_LOSS  : 环岛候选的单侧连续丢线行数下限
+#define ZT_NEAR_ROW_DEF       72    // NEAR_ROW: 近端拐点最低行(y>=该值才算"近端", 排除远处弯道误判)
 #define ZT_IN_STEP_DEF        900   // IN_STEP : zt5->zt6 进环所需编码器累计步数
 #define ZT_OUT_STEP_DEF       500   // OUT_STEP: zt7->zt8 / zt8->zt1 出环所需编码器步数
 #define ZT_WIDTH_JUMP_DEF     40    // W_JUMP  : zt6->zt7 赛道宽度突变阈值(像素)
 #define ZT_CURVE_BEND_DEF     18    // CURVE   : 前方弯度(远/近中线差)超过多少判拐弯
-#define RING_BIAS_DEF         15    // R_BIAS  : zt4/zt5 朝环侧偏置(像素, 进环)。过弯冲出去就加大
+#define RING_BIAS_DEF         6     // R_BIAS  : zt5 进环斜拉线基础上朝环侧的微调偏置(像素)
 #define RING_BIAS2_DEF        12    // R_BIAS2 : zt7/zt8 离环侧偏置(像素, 出环)
 #define CROSS_LOSS_MIN_DEF    25    // C_LOSS  : 判十字的双侧连续丢线行数下限
 

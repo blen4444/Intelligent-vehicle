@@ -13,7 +13,7 @@
 #define SPEED_K_GAIN_DEF          0.15f   // 速度增益: 越快打角越多(0.15 -> 满速约 1.75 倍)
 #define STEER_CENTER_RATIO_DEF    0.55f   // 小偏差(直道)保留的增益比例, 越小越稳
 #define STEER_KNEE_ERR_DEF        25.0f   // 偏差超过多少像素才恢复 100% 增益
-#define STEER_FF_K_DEF            1.3f    // 曲率前馈: 远处每偏 1 像素预打的舵量
+#define STEER_FF_K_DEF            0.85f   // 曲率前馈: 远处每偏 1 像素预打的舵量(修复单侧出屏前馈后适当下调, 防切内线)
 #define STEER_FF_DEAD_DEF         6.0f    // 前馈死区(像素), 直道 far-near 抖动不预打
 #define STEER_FF_GAIN_SPD_DEF     0.25f   // 前馈速度缩放: 400档=0.25, 1600档=1.0(封顶), 低速提前打弯就调小
 #define STEER_KD_DEF              1.50f   // 误差变化率阻尼系数

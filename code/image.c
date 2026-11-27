@@ -214,37 +214,60 @@ uint8 Ostuf(uint8 *image)   //注意计算阈值的一定要是原图像
 void set_image_twovalues (uint8 value)
 {
     uint16 sum;
+    uint16 th9;
     uint8 cnt;
-    uint8 temp_value;
     uint8 th;
+    uint8 i, j;
 
-    for(uint8 i=0;i<MT9V03X_H;i++)
+    for(i = 0; i < MT9V03X_H; i++)
     {
         th = img_row_threshold[i];
         if(th == 0)
         {
             th = value;     // 没算过分带阈值时用传入值兜底
         }
-        for(uint8 j=0;j<MT9V03X_W;j++)
+
+        if(i > 0 && i < MT9V03X_H - 1)
         {
-            sum = base_image[i][j];
-            cnt = 1;
-            if(i > 0)                       { sum += base_image[i-1][j];   cnt++; }
-            if(i < MT9V03X_H - 1)           { sum += base_image[i+1][j];   cnt++; }
-            if(j > 0)                       { sum += base_image[i][j-1];   cnt++; }
-            if(j < MT9V03X_W - 1)           { sum += base_image[i][j+1];   cnt++; }
-            if(i > 0 && j > 0)              { sum += base_image[i-1][j-1]; cnt++; }
-            if(i > 0 && j < MT9V03X_W - 1)  { sum += base_image[i-1][j+1]; cnt++; }
-            if(i < MT9V03X_H - 1 && j > 0)  { sum += base_image[i+1][j-1]; cnt++; }
-            if(i < MT9V03X_H - 1 && j < MT9V03X_W - 1) { sum += base_image[i+1][j+1]; cnt++; }
-            temp_value = (uint8)(sum / cnt);
-            if (temp_value < th)
+            const uint8 *r0 = base_image[i - 1];
+            const uint8 *r1 = base_image[i];
+            const uint8 *r2 = base_image[i + 1];
+            uint8 *dst = image[i];
+
+            // 左边界 j = 0 (6 邻域)
+            sum = (uint16)r0[0] + r0[1] + r1[0] + r1[1] + r2[0] + r2[1];
+            dst[0] = (sum < (uint16)th * 6u) ? 0 : 255;
+
+            // 内圈固定 9 邻域: 用 sum < th*9 消除逐像素分支与除法
+            th9 = (uint16)th * 9u;
+            for(j = 1; j < MT9V03X_W - 1; j++)
             {
-                image[i][j]=0;
+                sum = (uint16)r0[j - 1] + r0[j] + r0[j + 1]
+                    + (uint16)r1[j - 1] + r1[j] + r1[j + 1]
+                    + (uint16)r2[j - 1] + r2[j] + r2[j + 1];
+                dst[j] = (sum < th9) ? 0 : 255;
             }
-            else
+
+            // 右边界 j = MT9V03X_W - 1 (6 邻域)
+            j = MT9V03X_W - 1;
+            sum = (uint16)r0[j - 1] + r0[j] + r1[j - 1] + r1[j] + r2[j - 1] + r2[j];
+            dst[j] = (sum < (uint16)th * 6u) ? 0 : 255;
+        }
+        else
+        {
+            for(j = 0; j < MT9V03X_W; j++)
             {
-                image[i][j]=255;
+                sum = base_image[i][j];
+                cnt = 1;
+                if(i > 0)                                  { sum += base_image[i - 1][j];     cnt++; }
+                if(i < MT9V03X_H - 1)                      { sum += base_image[i + 1][j];     cnt++; }
+                if(j > 0)                                  { sum += base_image[i][j - 1];     cnt++; }
+                if(j < MT9V03X_W - 1)                      { sum += base_image[i][j + 1];     cnt++; }
+                if(i > 0 && j > 0)                         { sum += base_image[i - 1][j - 1]; cnt++; }
+                if(i > 0 && j < MT9V03X_W - 1)             { sum += base_image[i - 1][j + 1]; cnt++; }
+                if(i < MT9V03X_H - 1 && j > 0)             { sum += base_image[i + 1][j - 1]; cnt++; }
+                if(i < MT9V03X_H - 1 && j < MT9V03X_W - 1) { sum += base_image[i + 1][j + 1]; cnt++; }
+                image[i][j] = (sum < (uint16)th * (uint16)cnt) ? 0 : 255;
             }
         }
     }
@@ -258,6 +281,8 @@ void set_image_twovalues (uint8 value)
 备  注：摄像头压低后, 图像最底部常常整行都是赛道(左右边线在视野之外),
         在这一行上根本找不到黑白跳变。所以不再只盯 jidian_search_line-1,
         而是从这一行往上逐行试, 取第一行"左右都能找到真实跳变"的行作为起点:
+          - 优先从图像中心向两侧找边(中心在赛道内时), 只落在当前赛道的边上,
+            不会越过赛道外的大片白色区域; 中心不在赛道内(急弯)时回退全图扫描
           - 左右宽度必须在 [JIDIAN_W_MIN, JIDIAN_W_MAX] 内
           - 两边之间必须基本是白(赛道), 防止噪声点被当成边线
           - 与上一帧宽度相差不能太大(JIDIAN_W_JUMP), 防止抓到阴影/反光
@@ -289,79 +314,167 @@ static uint8 jidian_white_mid(const uint8 *row, int16 l, int16 r)
     return (uint8)(total > 0 && (white * 10) >= (total * 8));   // >= 80% 白
 }
 
-void find_jidian(uint8 index[MT9V03X_H][MT9V03X_W])
+// 在 [y_start, y_end] (y_start >= y_end) 内找"单侧存在真实跳变、另一侧全白出屏"的起点行
+static uint8 find_jidian_single_side(uint8 index[MT9V03X_H][MT9V03X_W], int16 y_start, int16 y_end)
 {
     int16 y, x;
-    uint8 found = 0;
-    uint8 pass;
+    int16 cmid = MT9V03X_W / 2;
 
-    jidian_valid = 0;
-
-    // 1. 从近到远逐行找"左右边线都真实存在"的行
-    //    pass 0: 带宽度连续性约束(抗阴影/反光)
-    //    pass 1: 去掉连续性约束(十字/宽窄突变处宽度本来就跳, 避免被上一帧宽度锁死)
-    for(pass = 0; pass < 2 && !found; pass++)
+    for(y = y_start; y >= y_end; y--)
     {
-        for(y = jidian_search_line - 1; y >= JIDIAN_SCAN_TOP; y--)
+        int16 l = -1, r = -1;
+
+        if(index[y][cmid] == 255)
         {
-            int16 l = -1, r = -1;
-
-            // 从左向右扫第一个 黑->白(赛道左边界)。不再从图像中心扫:
-            // 急弯里赛道可能整体偏到图像一侧, 中心另一侧根本没有赛道,
-            // 从中心扫会找不到另一边 -> 基点查找失败 -> 兜底直线冲出弯道。
-            for(x = 1; x <= MT9V03X_W - 2; x++)
+            for(x = cmid; x >= 1; x--)
             {
-                if(index[y][x - 1] == 0 && index[y][x] == 255) { l = x; break; }
+                if(index[y][x] == 255 && index[y][x - 1] == 0) { l = x; break; }
             }
-            if(l < 0) continue;                 // 整行没有左边界(全白/全黑) -> 换下一行
-
-            // 从右向左扫第一个 白->黑(赛道右边界)
-            for(x = MT9V03X_W - 2; x >= 1; x--)
+            for(x = cmid; x <= MT9V03X_W - 2; x++)
             {
                 if(index[y][x] == 255 && index[y][x + 1] == 0) { r = x; break; }
             }
-            if(r < 0 || r <= l) continue;       // 右边界必须在左边界右侧
+        }
+        else if(index[y][0] == 255)
+        {
+            for(x = 0; x <= MT9V03X_W - 2; x++)
+            {
+                if(index[y][x] == 255 && index[y][x + 1] == 0) { r = x; break; }
+            }
+        }
+        else if(index[y][MT9V03X_W - 1] == 255)
+        {
+            for(x = MT9V03X_W - 1; x >= 1; x--)
+            {
+                if(index[y][x] == 255 && index[y][x - 1] == 0) { l = x; break; }
+            }
+        }
 
-            if(r - l < JIDIAN_W_MIN || r - l > JIDIAN_W_MAX) continue;    // 宽度不合理
-            if(!jidian_white_mid(index[y], l, r)) continue;               // 中间不是赛道
+        if(l < 0 && r >= JIDIAN_W_MIN && jidian_white_mid(index[y], 0, r))
+        {
+            left_jidian     = 1;
+            right_jidian    = (uint8)r;
+            search_top_row  = (uint8)y;
+            jidian_valid    = 1;
+            jidian_last_top = search_top_row;
+            return 1;       // 单侧出屏不覆盖 jidian_last_w, 保留上次真实赛道宽度
+        }
+        if(r < 0 && l >= 1 && (MT9V03X_W - 1 - l) >= JIDIAN_W_MIN &&
+           jidian_white_mid(index[y], l, MT9V03X_W - 1))
+        {
+            left_jidian     = (uint8)l;
+            right_jidian    = MT9V03X_W - 2;
+            search_top_row  = (uint8)y;
+            jidian_valid    = 1;
+            jidian_last_top = search_top_row;
+            return 1;
+        }
+    }
+    return 0;
+}
+
+// 在 [y_start, y_end] 内找"双侧边线都真实存在"的起点行
+static uint8 find_jidian_both_sides(uint8 index[MT9V03X_H][MT9V03X_W], int16 y_start, int16 y_end)
+{
+    int16 y, x;
+    uint8 pass;
+
+    // pass 0: 带宽度连续性约束(抗阴影/反光)
+    // pass 1: 去掉连续性约束(十字/宽窄突变处避免被上一帧宽度锁死)
+    for(pass = 0; pass < 2; pass++)
+    {
+        for(y = y_start; y >= y_end; y--)
+        {
+            int16 l = -1, r = -1;
+            int16 cmid = MT9V03X_W / 2;
+
+            if(index[y][cmid] == 255)
+            {
+                for(x = cmid; x >= 1; x--)
+                {
+                    if(index[y][x] == 255 && index[y][x - 1] == 0) { l = x; break; }
+                }
+                for(x = cmid; x <= MT9V03X_W - 2; x++)
+                {
+                    if(index[y][x] == 255 && index[y][x + 1] == 0) { r = x; break; }
+                }
+            }
+
+            // 回退: 中心不在赛道内(急弯里赛道整体偏到一侧) -> 全图扫
+            if(l < 0 || r < 0 || r <= l)
+            {
+                l = -1; r = -1;
+                for(x = 1; x <= MT9V03X_W - 2; x++)
+                {
+                    if(index[y][x - 1] == 0 && index[y][x] == 255) { l = x; break; }
+                }
+                if(l < 0) continue;
+
+                for(x = MT9V03X_W - 2; x >= 1; x--)
+                {
+                    if(index[y][x] == 255 && index[y][x + 1] == 0) { r = x; break; }
+                }
+                if(r < 0 || r <= l) continue;
+            }
+
+            if(r - l < JIDIAN_W_MIN || r - l > JIDIAN_W_MAX) continue;
+            if(!jidian_white_mid(index[y], l, r)) continue;
             if(pass == 0 && jidian_last_ok)
             {
                 int16 dw = (int16)(r - l) - (int16)jidian_last_w;
                 if(dw < 0) dw = -dw;
-                if(dw > JIDIAN_W_JUMP) continue;                          // 宽度突变: 多半抓到阴影/反光
+                if(dw > JIDIAN_W_JUMP) continue;
             }
 
-            left_jidian    = (uint8)l;
-            right_jidian   = (uint8)r;
-            search_top_row = (uint8)y;
-            jidian_valid   = 1;
-            found          = 1;
-            break;
+            left_jidian     = (uint8)l;
+            right_jidian    = (uint8)r;
+            search_top_row  = (uint8)y;
+            jidian_valid    = 1;
+            jidian_last_l   = left_jidian;
+            jidian_last_r   = right_jidian;
+            jidian_last_w   = (uint8)(right_jidian - left_jidian);
+            jidian_last_top = search_top_row;
+            jidian_last_ok  = 1;
+            return 1;
         }
     }
+    return 0;
+}
 
-    // 2. 全都找不到: 用上一帧有效基点, 单帧全白/脏点不会把追踪带飞
-    if(!found)
+void find_jidian(uint8 index[MT9V03X_H][MT9V03X_W])
+{
+    int16 near_end = jidian_search_line - 15;   // 近端优先区(109..95)
+    if(near_end < JIDIAN_SCAN_TOP) near_end = JIDIAN_SCAN_TOP;
+
+    jidian_valid = 0;
+
+    // 1. 先在近端(109..95)找双侧有效行
+    if(find_jidian_both_sides(index, jidian_search_line - 1, near_end)) return;
+
+    // 2. 近端没有双侧行时, 优先在近端做单侧出屏兜底:
+    //    环岛入口(如图 1.3/1.5)或急弯底部常是一侧全白+另一侧清晰边线,
+    //    若继续往上爬到 70 行去抓岛心黑弧, 会吃掉底部 30~40 行丢线段导致 zt4 误退出!
+    if(find_jidian_single_side(index, jidian_search_line - 1, near_end)) return;
+
+    // 3. 近端双侧和单侧都找不到(真正底部整行全白或全黑)才往上爬到 JIDIAN_SCAN_TOP
+    if(near_end > JIDIAN_SCAN_TOP)
     {
-        search_top_row = jidian_last_top;      // 保持上一帧起点, 别硬跳回 109
-        if(jidian_last_ok)
-        {
-            left_jidian  = jidian_last_l;
-            right_jidian = jidian_last_r;
-        }
-        else
-        {
-            left_jidian  = 1;                   // 边线在视野外, 取图像边缘当种子
-            right_jidian = MT9V03X_W - 2;
-        }
-        return;
+        if(find_jidian_both_sides(index, near_end - 1, JIDIAN_SCAN_TOP)) return;
+        if(find_jidian_single_side(index, near_end - 1, JIDIAN_SCAN_TOP)) return;
     }
 
-    jidian_last_l  = left_jidian;
-    jidian_last_r  = right_jidian;
-    jidian_last_w  = (uint8)(right_jidian - left_jidian);
-    jidian_last_top = search_top_row;
-    jidian_last_ok = 1;
+    // 4. 全都找不到: 用上一帧有效基点, 单帧全白/脏点不会把追踪带飞
+    search_top_row = jidian_last_top;
+    if(jidian_last_ok)
+    {
+        left_jidian  = jidian_last_l;
+        right_jidian = jidian_last_r;
+    }
+    else
+    {
+        left_jidian  = 1;
+        right_jidian = MT9V03X_W - 2;
+    }
 }
 
 //==================== 八邻域(1x7 窗口)边线追踪 + 丢线补线 ====================
@@ -411,8 +524,11 @@ uint8 ring_corner_side = 0;
 
 static uint8 left_lost[MT9V03X_H];   // 1=该行左边线丢失(被补线)
 static uint8 right_lost[MT9V03X_H];  // 1=该行右边线丢失(被补线)
+static uint8 mid_conf[MT9V03X_H];    // 中线可信度: 2=双侧真值 1=单侧外推 0=双侧都丢(沿用上一行)
 
+#define RING_STRAIGHT_TOL   8       // 对侧边线最大弦偏离(像素): 透视下直道是斜直线, 必须用弦偏离而非 |x1-x0|
 static void element_detect(void);    // 元素 FSM(定义在 image_deal 之后)
+static uint8 edge_straight(const uint8 *line, int16 lo, int16 hi, int16 tol);
 
 static int16 edge_left(const uint8 index[MT9V03X_H][MT9V03X_W], int16 y, int16 last, int16 win)
 {
@@ -448,6 +564,51 @@ static int16 edge_right(const uint8 index[MT9V03X_H][MT9V03X_W], int16 y, int16 
         }
     }
     return best;
+}
+
+/*********************************************************************
+函数功能：从赛道内部(对侧边线)向该侧扫描, 取"连续白色赛道的端点"作为该侧边线
+备  注：赛道外的白纸/光斑与赛道之间一般有黑色缝, 从赛道内向外扫时
+        会先在黑缝处停下, 因此外部白色区域不会被当成当前赛道的边。
+        from_x = 对侧边线位置(本行预测), last = 该侧上一行位置, win = 允许的最大变化。
+*********************************************************************/
+static int16 edge_left_span(const uint8 index[MT9V03X_H][MT9V03X_W], int16 y, int16 from_x, int16 last, int16 win)
+{
+    int16 x, lo = last - win, hi = last + win;
+    if(lo < 1) lo = 1;
+    if(hi > MT9V03X_W - 2) hi = MT9V03X_W - 2;
+    if(from_x > MT9V03X_W - 2) from_x = MT9V03X_W - 2;
+    if(from_x < lo) return -1;                     // 对侧位置已经跑到该侧窗口外, 不可信
+    for(x = from_x; x >= lo; x--)
+    {
+        if(index[y][x] == 255 && index[y][x - 1] == 0)
+        {
+            // 跳过赛道内部 1px 孤立黑噪点, 避免把噪点当边线触发假丢线
+            if(x >= 2 && index[y][x - 2] == 255) continue;
+            // 真正的黑边必须落在 [lo, hi] 窗口内; 若提前撞到黑区则直接停下, 不跨黑缝抓外部白纸
+            return (x <= hi) ? x : -1;
+        }
+    }
+    return -1;
+}
+
+static int16 edge_right_span(const uint8 index[MT9V03X_H][MT9V03X_W], int16 y, int16 from_x, int16 last, int16 win)
+{
+    int16 x, lo = last - win, hi = last + win;
+    if(lo < 1) lo = 1;
+    if(hi > MT9V03X_W - 2) hi = MT9V03X_W - 2;
+    if(from_x < 1) from_x = 1;
+    if(from_x > hi) return -1;
+    for(x = from_x; x <= hi; x++)
+    {
+        if(index[y][x] == 255 && index[y][x + 1] == 0)
+        {
+            // 跳过赛道内部 1px 孤立黑噪点
+            if(x <= MT9V03X_W - 3 && index[y][x + 2] == 255) continue;
+            return (x >= lo) ? x : -1;
+        }
+    }
+    return -1;
 }
 
 // 有符号除法, 向最近取整(b > 0), 用于算丢线断点之间的平均斜率(每行 dx)
@@ -494,6 +655,21 @@ void image_deal(uint8 index[MT9V03X_H][MT9V03X_W])
     int16 win_small = (int16)edge_window;
     int16 win_big   = (int16)(edge_window + lost_extra);
 
+    // 赛道外剔除用: 宽度参考 / 上一行边线 / 远端断开标志
+    int16 w_prev    = (int16)(right_jidian - left_jidian);  // 最近一次双侧有效的间距
+    int16 w_prev_y  = top_y;                                // w_prev 对应的行号
+    int16 w_slope_q4 = 12;                                  // 透视收缩率(Q4定点: 12 => 0.75 px/行), 在线平滑更新
+    int16 prev_lx   = left_jidian, prev_rx = right_jidian;  // 上一行的左右边线
+    uint8 dead_run  = 0;                                    // 连续双侧检测失败的行数
+    uint8 track_dead = 0;                                   // 1=远端接不上, 停止追踪
+    // 单侧出屏基点(left_jidian<=1 或 right_jidian>=W-2)时, right-left 不是真实赛道宽度, 改用上一帧有效宽度
+    if(left_jidian <= 1 || right_jidian >= MT9V03X_W - 2)
+    {
+        w_prev = (jidian_last_ok && jidian_last_w >= TRACK_W_MIN && jidian_last_w <= TRACK_W_MAX)
+                 ? (int16)jidian_last_w : 120;
+    }
+    if(w_prev < TRACK_W_MIN || w_prev > TRACK_W_MAX) w_prev = 0;   // 起点宽度不可信则不参与突变校验
+
     // 方案A: 斜率继承(纯切线外推, 无宽度钳制)
     int16 slope_l = 0, slope_r = 0;                       // 每侧冻结的每行斜率 dx/dy
     int16 real_lx = left_jidian, real_rx = right_jidian;  // 最近一次"真检测"到的边线
@@ -515,17 +691,73 @@ void image_deal(uint8 index[MT9V03X_H][MT9V03X_W])
         int16 sl = (lx < 1) ? 1 : lx;  if(sl > MT9V03X_W - 2) sl = MT9V03X_W - 2;
         int16 sr = (rx < 1) ? 1 : rx;  if(sr > MT9V03X_W - 2) sr = MT9V03X_W - 2;
 
-        // 1) 窗口追踪左右边线
-        lf = edge_left(index, y, sl, win_small);
-        if(lf < 0) lf = edge_left(index, y, sl, win_big);
-        rf = edge_right(index, y, sr, win_small);
-        if(rf < 0) rf = edge_right(index, y, sr, win_big);
+        // 1) 左右边线: 优先"从对侧(赛道内)向外扫连续白色赛道的端点"。
+        //    赛道外的白纸/光斑与赛道之间有黑缝, 这样扫会在赛道边停下, 不会跑到赛道外;
+        //    对侧位置本行不在白色赛道内时, 回退到原来的窗口搜索。
+        if(index[y][sr] == 255)
+        {
+            lf = edge_left_span(index, y, sr, sl, win_big);
+        }
+        else
+        {
+            lf = edge_left(index, y, sl, win_small);
+            if(lf < 0) lf = edge_left(index, y, sl, win_big);
+        }
+        if(index[y][sl] == 255)
+        {
+            rf = edge_right_span(index, y, sl, sr, win_big);
+        }
+        else
+        {
+            rf = edge_right(index, y, sr, win_small);
+            if(rf < 0) rf = edge_right(index, y, sr, win_big);
+        }
+
+        // 1.5) 赛道外剔除: 贴图像边缘 / 左右间距异常的"边线"当丢线处理。
+        //      场地上的白纸/背景板边界也是黑白跳变, 不加约束时会沿着它跑偏。
+        if(lf >= 0 && (lf <= 1 || lf >= MT9V03X_W - 2)) lf = -1;
+        if(rf >= 0 && (rf <= 1 || rf >= MT9V03X_W - 2)) rf = -1;
+        if(lf >= 0 && rf >= 0)
+        {
+            int16 w = (int16)(rf - lf);
+            uint8 bad = (uint8)((w < TRACK_W_MIN) || (w > TRACK_W_MAX));
+            if(!bad && w_prev > 0)
+            {
+                int16 dw2 = (w > w_prev) ? (int16)(w - w_prev) : (int16)(w_prev - w);
+                if(dw2 > TRACK_W_STEP) bad = 1;                 // 间距突变: 某侧跳到了别的边沿
+            }
+            if(bad)
+            {
+                // 丢弃偏离上一行更远的那一侧(通常就是跑到赛道外白区的那条)
+                int16 dl = (lf >= prev_lx) ? (int16)(lf - prev_lx) : (int16)(prev_lx - lf);
+                int16 dr = (rf >= prev_rx) ? (int16)(rf - prev_rx) : (int16)(prev_rx - rf);
+                if(dl >= dr) lf = -1;
+                else         rf = -1;
+            }
+        }
+        else if(lf >= 0 && !prev_lost_r && prev_rx > 1 && prev_rx < MT9V03X_W - 2)
+        {
+            int16 w = (int16)(prev_rx - lf);
+            if(w < TRACK_W_MIN || w > TRACK_W_MAX) lf = -1;
+        }
+        else if(rf >= 0 && !prev_lost_l && prev_lx > 1 && prev_lx < MT9V03X_W - 2)
+        {
+            int16 w = (int16)(rf - prev_lx);
+            if(w < TRACK_W_MIN || w > TRACK_W_MAX) rf = -1;
+        }
 
         // 检测到的边更新真值, 并用相邻两次真检测点更新该侧斜率(切线)
+        // 斜率做指数平滑 + 限幅: 单帧噪声点不会让补线方向突然翻转(切点一抖中线就到处跳)
         if(lf >= 0)
         {
             int16 dy = (int16)(real_ly - y);
-            if(dy > 0) slope_l = slope_div((int16)(lf - real_lx), dy);
+            if(dy > 0)
+            {
+                int16 ns = slope_div((int16)(lf - real_lx), dy);
+                slope_l = (int16)((slope_l * TRACK_SLOPE_SMOOTH + ns) / (TRACK_SLOPE_SMOOTH + 1));
+                if(slope_l > 8) slope_l = 8;
+                if(slope_l < -8) slope_l = -8;
+            }
             real_lx = lf;
             real_ly = y;
             lx = lf;
@@ -533,7 +765,13 @@ void image_deal(uint8 index[MT9V03X_H][MT9V03X_W])
         if(rf >= 0)
         {
             int16 dy = (int16)(real_ry - y);
-            if(dy > 0) slope_r = slope_div((int16)(rf - real_rx), dy);
+            if(dy > 0)
+            {
+                int16 ns = slope_div((int16)(rf - real_rx), dy);
+                slope_r = (int16)((slope_r * TRACK_SLOPE_SMOOTH + ns) / (TRACK_SLOPE_SMOOTH + 1));
+                if(slope_r > 8) slope_r = 8;
+                if(slope_r < -8) slope_r = -8;
+            }
             real_rx = rf;
             real_ry = y;
             rx = rf;
@@ -550,8 +788,15 @@ void image_deal(uint8 index[MT9V03X_H][MT9V03X_W])
             if(!prev_lost_r && lost_r) { tan_rx = real_rx; tan_ry = real_ry; tangent_point_r_active = 1; }
 
             // 2) 补线(方案A: 纯切线外推)
-            if(lost_l && !lost_r)      lx = lx + slope_l;
-            else if(!lost_l && lost_r) rx = rx + slope_r;
+            //    单侧丢线太久就不再继续外推(保持最后位置), 否则会一路漂到赛道外的白色区域
+            if(lost_l && !lost_r)
+            {
+                if(lost_run_l < TRACK_LOST_MAX) lx = lx + slope_l;
+            }
+            else if(!lost_l && lost_r)
+            {
+                if(lost_run_r < TRACK_LOST_MAX) rx = rx + slope_r;
+            }
             // 双边都有效: lx/rx 已是真检测值, 无需补
             // 两边都丢: 沿用上一行的 lx/rx(即保持上一行中线)
 
@@ -596,17 +841,98 @@ void image_deal(uint8 index[MT9V03X_H][MT9V03X_W])
             prev_lost_r = lost_r;
         }
 
-        // 3) 中线用真值算, 只把结果钳进 uint8 范围
+        // 3) 中线: 双侧真值直接平均; 单侧真值时用"真值 ± 透视修正半宽"推算。
+        //    不再依赖切线外推 —— 弯道里切线不跟曲率, 会把中线一路拽到赛道外;
+        //    同时按透视收缩率缩放 w_prev, 防止近端大宽度沿用到远端把中线推到赛道外。
         {
-            int16 mid = (int16)((lx + rx) / 2);
+            int16 mid;
+            if(lf >= 0 && rf >= 0)
+            {
+                mid = (int16)((lx + rx) / 2);
+            }
+            else if((lf >= 0 || rf >= 0) && w_prev >= TRACK_W_MIN)
+            {
+                int16 dy_w = (int16)(w_prev_y - y);
+                int16 w_est = w_prev;
+                if(dy_w > 0)
+                {
+                    w_est = (int16)(w_prev - (int16)(((int32)dy_w * w_slope_q4) >> 4));
+                    if(w_est < TRACK_W_MIN) w_est = TRACK_W_MIN;
+                    if(w_est > w_prev)      w_est = w_prev;
+                }
+                mid = (lf >= 0) ? (int16)(lx + w_est / 2) : (int16)(rx - w_est / 2);
+            }
+            else
+            {
+                mid = (int16)((lx + rx) / 2);
+            }
             if(mid < 0) mid = 0;
             if(mid > MT9V03X_W - 1) mid = MT9V03X_W - 1;
             mid_line_list[y] = (uint8)mid;
+            // 可信度: 双侧真值 > 单侧真值推算 > 都丢(沿用上一行, 不参与中线平均)
+            if(lf >= 0 && rf >= 0)
+            {
+                mid_conf[y] = 2;
+            }
+            else if(lf >= 0 || rf >= 0)
+            {
+                mid_conf[y] = 1;
+            }
+            else
+            {
+                mid_conf[y] = 0;
+            }
         }
 
         // 4) 边线显示值: 出屏不画
         left_line_list[y]  = (lx >= 0 && lx < MT9V03X_W) ? (uint8)lx : (uint8)EDGE_OFFSCREEN;
         right_line_list[y] = (rx >= 0 && rx < MT9V03X_W) ? (uint8)rx : (uint8)EDGE_OFFSCREEN;
+
+        // 5) 赛道外剔除状态更新 + 远端断开判定
+        prev_lx = lx;  prev_rx = rx;
+        if(lf >= 0 && rf >= 0)
+        {
+            int16 w_now = (int16)(rf - lf);
+            if(w_prev >= TRACK_W_MIN && w_prev_y > y)
+            {
+                int16 dy_w = (int16)(w_prev_y - y);
+                int16 dw_w = (int16)(w_prev - w_now);
+                if(dw_w > 0 && dw_w < TRACK_W_STEP)
+                {
+                    int16 s_q4 = (int16)(((int32)dw_w << 4) / dy_w);
+                    if(s_q4 < 4)  s_q4 = 4;
+                    if(s_q4 > 24) s_q4 = 24;
+                    w_slope_q4 = (int16)((w_slope_q4 * 3 + s_q4) / 4);
+                }
+            }
+            w_prev = w_now;
+            w_prev_y = y;
+        }
+        if(lf < 0 && rf < 0) dead_run++;
+        else                 dead_run = 0;
+        if(dead_run >= TRACK_DEAD_RUN && y <= (int16)top_y - TRACK_DEAD_NEAR)
+        {
+            track_dead = 1;
+            break;                    // 远端接不上了: 停止追踪, 不再往上看/画乱线
+        }
+    }
+
+    // 远端断开后: 把包含连续 dead_run 在内的远端行一并清理, 避免末端冻结线把中线/画线带飞
+    if(track_dead)
+    {
+        int16 y_clean = (int16)(y + (int16)dead_run - 1);
+        uint8 m_last;
+        if(y_clean > top_y) y_clean = top_y;
+        m_last = mid_line_list[(y_clean < top_y) ? (y_clean + 1) : top_y];
+        for(y = y_clean; y >= search_end_line; y--)
+        {
+            left_line_list[y]  = EDGE_OFFSCREEN;
+            right_line_list[y] = EDGE_OFFSCREEN;
+            mid_line_list[y]   = m_last;
+            left_lost[y]       = 0;
+            right_lost[y]      = 0;
+            mid_conf[y]        = 0;
+        }
     }
 
     // 起点行以下的近场行(y > top_y)直接复制起点行:
@@ -620,6 +946,7 @@ void image_deal(uint8 index[MT9V03X_H][MT9V03X_W])
         mid_line_list[y]   = mid_line_list[top_y];
         left_lost[y]       = 0;
         right_lost[y]      = 0;
+        mid_conf[y]        = 0;
     }
 
     // ===== 环岛三拐点提取 + 拐点1-拐点2 拉线(替换丢线段的切线外推) =====
@@ -633,9 +960,13 @@ void image_deal(uint8 index[MT9V03X_H][MT9V03X_W])
         int16 *lo = 0, *hi = 0;
         uint8  n = 0, side = 0;
 
-        // 只对"单侧长丢线"做环岛拉线(排除弯道/十字)
-        if(lenL2 >= (uint16)ring_loss_min && lenR2 < (uint16)ring_loss_min)      { side = 0; lo = loL; hi = hiL; n = nL2; }
-        else if(lenR2 >= (uint16)ring_loss_min && lenL2 < (uint16)ring_loss_min) { side = 1; lo = loR; hi = hiR; n = nR2; }
+        // 只对"单侧长丢线且对侧为直线(或已在环岛态)"做环岛拉线, 避免普通急弯被误拉直
+        if(lenL2 >= (uint16)ring_loss_min && lenR2 < (uint16)ring_loss_min &&
+           (zt_state >= ZT_RING_NEAR || edge_straight(right_line_list, loL[0], hiL[0], RING_STRAIGHT_TOL)))
+        { side = 0; lo = loL; hi = hiL; n = nL2; }
+        else if(lenR2 >= (uint16)ring_loss_min && lenL2 < (uint16)ring_loss_min &&
+                (zt_state >= ZT_RING_NEAR || edge_straight(left_line_list, loR[0], hiR[0], RING_STRAIGHT_TOL)))
+        { side = 1; lo = loR; hi = hiR; n = nR2; }
 
         if(n)
         {
@@ -676,6 +1007,7 @@ void image_deal(uint8 index[MT9V03X_H][MT9V03X_W])
                         m = (int16)((x + other) / 2);
                         if(m < 0) m = 0; if(m > MT9V03X_W - 1) m = MT9V03X_W - 1;
                         mid_line_list[y] = (uint8)m;
+                        mid_conf[y]      = 2;      // 拉线构造出的中线是明确几何值, 按可信处理
                     }
                 }
             }
@@ -689,6 +1021,114 @@ void image_deal(uint8 index[MT9V03X_H][MT9V03X_W])
     }
 
     element_detect();
+
+    // ===== zt5 进环封口拉线: 把外侧边线从底行斜拉到环岛上方拐点, 强行把中线折入环岛 =====
+    if(zt_state == ZT_RING_FAR)
+    {
+        int16 y_bot = top_y;
+        int16 x_bot, tx, ty;
+        uint8 target_ok = 0;
+
+        if(zt_side == 0)    // 左环岛: 封死直道出口 -> 从右下斜拉到左上拐点作为新右边线
+        {
+            x_bot = (right_line_list[y_bot] != EDGE_OFFSCREEN) ? (int16)right_line_list[y_bot] : (int16)(MT9V03X_W - 12);
+            if(ring_c2_ok && ring_corner_side == 0 && ring_c2_y < y_bot - 15 && ring_c2_x < x_bot - 20)
+            {
+                tx = ring_c2_x;
+                ty = ring_c2_y;
+                target_ok = 1;
+            }
+            if(!target_ok)
+            {
+                for(y = y_bot - 10; y >= search_end_line + 5; y--)
+                {
+                    if(!left_lost[y] && left_line_list[y] != EDGE_OFFSCREEN && left_line_list[y] < x_bot - 20)
+                    {
+                        tx = (int16)left_line_list[y];
+                        ty = y;
+                        target_ok = 1;
+                        break;
+                    }
+                }
+            }
+            if(!target_ok) { tx = 18; ty = search_end_line + 18; }
+            if(ty >= y_bot - 5) ty = y_bot - 6;
+            if(ty < search_end_line) ty = search_end_line;
+
+            for(y = y_bot; y >= ty; y--)
+            {
+                int16 x = tx + (int16)(((int32)(x_bot - tx) * (y - ty)) / (y_bot - ty));
+                int16 m;
+                if(x < 2) x = 2;
+                if(x > MT9V03X_W - 2) x = MT9V03X_W - 2;
+                left_line_list[y]  = 0;
+                right_line_list[y] = (uint8)x;
+                m = (int16)(x / 2);
+                if(m < 1) m = 1;
+                mid_line_list[y] = (uint8)m;
+                mid_conf[y]      = 2;
+            }
+            for(y = ty - 1; y >= search_end_line; y--)
+            {
+                left_line_list[y]  = EDGE_OFFSCREEN;
+                right_line_list[y] = EDGE_OFFSCREEN;
+                mid_line_list[y]   = mid_line_list[ty];
+                mid_conf[y]        = 0;
+            }
+        }
+        else                // 右环岛: 从左下斜拉到右上拐点作为新左边线
+        {
+            x_bot = (left_line_list[y_bot] != EDGE_OFFSCREEN) ? (int16)left_line_list[y_bot] : 12;
+            if(ring_c2_ok && ring_corner_side == 1 && ring_c2_y < y_bot - 15 && ring_c2_x > x_bot + 20)
+            {
+                tx = ring_c2_x;
+                ty = ring_c2_y;
+                target_ok = 1;
+            }
+            if(!target_ok)
+            {
+                for(y = y_bot - 10; y >= search_end_line + 5; y--)
+                {
+                    if(!right_lost[y] && right_line_list[y] != EDGE_OFFSCREEN && right_line_list[y] > x_bot + 20)
+                    {
+                        tx = (int16)right_line_list[y];
+                        ty = y;
+                        target_ok = 1;
+                        break;
+                    }
+                }
+            }
+            if(!target_ok) { tx = MT9V03X_W - 19; ty = search_end_line + 18; }
+            if(ty >= y_bot - 5) ty = y_bot - 6;
+            if(ty < search_end_line) ty = search_end_line;
+
+            for(y = y_bot; y >= ty; y--)
+            {
+                int16 x = tx + (int16)(((int32)(x_bot - tx) * (y - ty)) / (y_bot - ty));
+                int16 m;
+                if(x < 1) x = 1;
+                if(x > MT9V03X_W - 3) x = MT9V03X_W - 3;
+                left_line_list[y]  = (uint8)x;
+                right_line_list[y] = (uint8)(MT9V03X_W - 1);
+                m = (int16)((x + MT9V03X_W - 1) / 2);
+                if(m > MT9V03X_W - 2) m = MT9V03X_W - 2;
+                mid_line_list[y] = (uint8)m;
+                mid_conf[y]      = 2;
+            }
+            for(y = ty - 1; y >= search_end_line; y--)
+            {
+                left_line_list[y]  = EDGE_OFFSCREEN;
+                right_line_list[y] = EDGE_OFFSCREEN;
+                mid_line_list[y]   = mid_line_list[ty];
+                mid_conf[y]        = 0;
+            }
+        }
+
+        // 在屏幕上直接标出进环斜拉线的起止点(红十字 + 红线), 方便调参观察
+        ring_c1_x = x_bot; ring_c1_y = y_bot; ring_c1_ok = 1;
+        ring_c2_x = tx;    ring_c2_y = ty;    ring_c2_ok = 1;
+        ring_c3_ok = 0;
+    }
 }
 
 /*********************************************************************
@@ -751,45 +1191,55 @@ static int16 mid_bend_est(void)
     return d;
 }
 
-// 对侧边线在 [lo,hi] 行内是否基本直线(起伏 <= tol), 用于区分"环岛入口"和"弯道"
-#define RING_STRAIGHT_TOL   18
+// 对侧边线在 [lo,hi] 行内是否基本直线(相对首尾连线的最大水平偏离 <= tol), 用于区分"环岛入口"和"弯道"
+// 透视下直道边线是斜直线(|x1-x0| 常达 40~70px), 不能用 |x1-x0| 判直, 必须用弦偏离。
 static uint8 edge_straight(const uint8 *line, int16 lo, int16 hi, int16 tol)
 {
-    int16 y, x0 = -1, x1 = -1;
-    uint16 n = 0, span;
+    int16 y, y0 = -1, y1 = -1, x0 = 0, x1 = 0;
+    int16 max_dev = 0;
+    uint16 n = 0;
     if(lo > hi) { int16 t = lo; lo = hi; hi = t; }
     for(y = lo; y <= hi; y++)
     {
         if(line[y] != EDGE_OFFSCREEN)
         {
-            if(n == 0) x0 = line[y];
-            x1 = line[y];
+            if(n == 0) { y0 = y; x0 = (int16)line[y]; }
+            y1 = y; x1 = (int16)line[y];
             n++;
         }
     }
-    if(n < 12) return 0;
-    span = (x1 > x0) ? (uint16)(x1 - x0) : (uint16)(x0 - x1);
-    return (span <= (uint16)tol) ? 1 : 0;
+    if(n < 12 || y1 <= y0) return 0;
+    for(y = y0; y <= y1; y++)
+    {
+        if(line[y] != EDGE_OFFSCREEN)
+        {
+            int16 x_exp = (int16)(x0 + ((int32)(x1 - x0) * (y - y0)) / (y1 - y0));
+            int16 dev = (int16)line[y] - x_exp;
+            if(dev < 0) dev = -dev;
+            if(dev > max_dev) max_dev = dev;
+        }
+    }
+    return (max_dev <= tol) ? 1 : 0;
 }
 
 /*********************************************************************
 函数功能：严格环岛候选判定
-  条件: 单侧连续丢线 >= R_LOSS; 近端拐点在下方(y >= NEAR_ROW)但**不贴图像最底**
-        (贴底的多是弯道内侧/底部缺角); 对侧不丢长线且基本是直线(区分弯道)
+  条件: 单侧连续丢线 >= R_LOSS; 丢线段下端足够靠下(近端, n >= NEAR_ROW 对应行);
+        对侧不丢长线且基本是直线(区分弯道)
+  说明: 允许丢线段一直贴到起点行 —— 环岛入口最常见的形态就是环侧边线
+        从图像底部附近断开, 旧版 "n <= top-10" 会把真环岛排除掉。
 *********************************************************************/
 static uint8 ring_candidate(uint16 lenL, int16 nL, int16 fL, uint16 lenR, int16 nR, int16 fR, uint8 *side)
 {
     int16 top      = (int16)search_top_row;
-    int16 bot      = top - 10;                                                  // 近端丢线底部最多到这里, 再靠下就是底部伪影/弯道内侧
     int16 near_min = top - ((search_start_line - 1) - (int16)zt_near_row);      // 默认 top=109 / NEAR_ROW=88 -> 88
-    if(bot < near_min + 1) bot = near_min + 1;                                  // 起点行抬高后 bot 可能反超, 保证判据可满足
-    if(lenL >= (uint16)ring_loss_min && nL >= near_min && nL <= bot &&
+    if(lenL >= (uint16)ring_loss_min && nL >= near_min &&
        lenR < (uint16)ring_loss_min && edge_straight(right_line_list, fL, nL, RING_STRAIGHT_TOL))
     {
         *side = 0;
         return 1;
     }
-    if(lenR >= (uint16)ring_loss_min && nR >= near_min && nR <= bot &&
+    if(lenR >= (uint16)ring_loss_min && nR >= near_min &&
        lenL < (uint16)ring_loss_min && edge_straight(left_line_list, fR, nR, RING_STRAIGHT_TOL))
     {
         *side = 1;
@@ -804,11 +1254,15 @@ static uint8 ring_candidate(uint16 lenL, int16 nL, int16 fL, uint16 lenR, int16 
   zt4 近端拐点拉线 -> zt5 远端拐点补线进环 -> zt6 环内(编码器计步)
   -> zt7 赛道宽度突变补线出环 -> zt8 出环远端拐点补线 -> zt1
 *********************************************************************/
+#define RING_STATE_TIMEOUT_FRAMES   250u    // 环岛单阶段超时帧数(防编码器异常/静止时卡死)
+
 static void element_detect(void)
 {
     static int32 enc_mark = 0;       // 进入当前阶段时的编码器里程
     static int16 prev_wid = 0;
+    static int16 ring_in_wid = 0;    // zt6 环内基准宽度(防渐变放宽漏判出环)
     static uint8 wid_valid = 0;
+    static uint16 state_frames = 0;  // 当前环岛阶段停留帧数(超时保护)
     uint16 lenL = 0, lenR = 0;
     int16  nL = -1, fL = -1, nR = -1, fR = -1;
     uint8  side = 0;
@@ -833,6 +1287,7 @@ static void element_detect(void)
     switch(zt_state)
     {
         case ZT_STRAIGHT:
+            state_frames = 0;
             if(cross_state)
             {
                 zt_state = ZT_CROSS;
@@ -842,6 +1297,7 @@ static void element_detect(void)
                 zt_state = ZT_RING_NEAR;      // 找到近端丢线边拐点, 对侧不丢线且为直线
                 zt_side  = side;
                 enc_mark = enc_travel;
+                state_frames = 0;
             }
             else if(mid_bend_est() >= (int16)zt_curve_bend)
             {
@@ -850,10 +1306,26 @@ static void element_detect(void)
             break;
 
         case ZT_CURVE:
-            if(mid_bend_est() < (int16)zt_curve_bend) zt_state = ZT_STRAIGHT;
+            state_frames = 0;
+            if(cross_state)
+            {
+                zt_state = ZT_CROSS;
+            }
+            else if(ring_candidate(lenL, nL, fL, lenR, nR, fR, &side))
+            {
+                zt_state = ZT_RING_NEAR;
+                zt_side  = side;
+                enc_mark = enc_travel;
+                state_frames = 0;
+            }
+            else if(mid_bend_est() < (int16)zt_curve_bend)
+            {
+                zt_state = ZT_STRAIGHT;
+            }
             break;
 
         case ZT_CROSS:
+            state_frames = 0;
             if(!cross_state) zt_state = ZT_STRAIGHT;
             break;
 
@@ -862,33 +1334,67 @@ static void element_detect(void)
             // "第一拐点消失": 环侧最长丢线段的底部贴到图像最底 -> 转 zt5 找远端拐点
             int16  nb = (zt_side == 0) ? nL : nR;
             uint16 len_side = (zt_side == 0) ? lenL : lenR;
-            if(nb >= (int16)search_top_row - 3)
+            if(++state_frames >= RING_STATE_TIMEOUT_FRAMES)
+            {
+                zt_state = ZT_STRAIGHT;
+                state_frames = 0;
+            }
+            else if(nb >= (int16)search_top_row - 3)
             {
                 zt_state = ZT_RING_FAR;
+                enc_mark = enc_travel;
+                state_frames = 0;
             }
             else if(len_side < (uint16)(ring_loss_min / 2))
             {
                 // 丢线消失说明是误判(普通弯道), 退回直行, 避免卡死在 zt4
                 zt_state = ZT_STRAIGHT;
+                state_frames = 0;
             }
             break;
         }
 
         case ZT_RING_FAR:                     // zt5: 远端拐点补线进环
-            // 编码器累计步数达到阈值 -> 停止补线, 进普通循迹(zt6)
+            // 编码器累计步数达到阈值 -> 停止补线, 进普通循迹(zt6); 超时则退回直行防卡死
             if((int32)(enc_travel - enc_mark) >= zt_in_step)
             {
                 zt_state = ZT_RING_IN;
                 enc_mark = enc_travel;
+                ring_in_wid = (wid > 20) ? wid : 0;
+                state_frames = 0;
+            }
+            else if(++state_frames >= RING_STATE_TIMEOUT_FRAMES)
+            {
+                zt_state = ZT_STRAIGHT;
+                state_frames = 0;
             }
             break;
 
         case ZT_RING_IN:                      // zt6: 环内普通循迹
-            // 赛道宽度突变 -> 出环补线(zt7)
-            if(wid_valid && dw >= (int16)zt_width_jump)
+            // 赛道宽度单帧突变 或 相对环内基准宽度累计放宽 >= W_JUMP -> 出环补线(zt7)
+            if(wid > 20)
+            {
+                if(ring_in_wid == 0)
+                {
+                    ring_in_wid = wid;
+                }
+                else if(wid < ring_in_wid)
+                {
+                    ring_in_wid = (int16)((ring_in_wid * 3 + wid) / 4);
+                }
+            }
+            if(wid_valid && state_frames >= 8u &&
+               (dw >= (int16)zt_width_jump ||
+                (ring_in_wid > 20 && wid > ring_in_wid && (wid - ring_in_wid) >= (int16)zt_width_jump)))
             {
                 zt_state = ZT_RING_EXIT;
                 enc_mark = enc_travel;
+                state_frames = 0;
+            }
+            else if(++state_frames >= (RING_STATE_TIMEOUT_FRAMES * 2u))
+            {
+                zt_state = ZT_STRAIGHT;
+                state_frames = 0;
             }
             break;
 
@@ -897,21 +1403,29 @@ static void element_detect(void)
             {
                 zt_state = ZT_RING_OUT;
                 enc_mark = enc_travel;
+                state_frames = 0;
+            }
+            else if(++state_frames >= RING_STATE_TIMEOUT_FRAMES)
+            {
+                zt_state = ZT_STRAIGHT;
+                state_frames = 0;
             }
             break;
 
         case ZT_RING_OUT:                     // zt8: 出环远端拐点补线(不入环)
         default:
-            if((int32)(enc_travel - enc_mark) >= zt_out_step)
+            if((int32)(enc_travel - enc_mark) >= zt_out_step ||
+               ++state_frames >= RING_STATE_TIMEOUT_FRAMES)
             {
                 zt_state = ZT_STRAIGHT;       // 结束, 出环回 zt1
+                state_frames = 0;
             }
             break;
     }
 }
 
 /*********************************************************************
-函数功能：中线 = 有效行左右边线中点的平均值(去掉加权与滤波, 省算力)
+函数功能：中线 = 有效行左右边线中点的加权平均 + 可信度加权 + 3帧中值
 函数名称：float find_mid_line_weight(void)
 输入参数：无
 输出参数：最终中线值
@@ -920,8 +1434,10 @@ float find_mid_line_weight(void)
 {
     float sum  = 0.0f;
     float wsum = 0.0f;
-    uint8 y;
+    int y;
     float mid;
+    static float mid_med[3] = {MID_W, MID_W, MID_W};   // 3 帧中值缓冲
+    static uint8 mid_med_idx = 0;
 
     /* 加权中线: 近端(车底)权重大、远端权重小。抬高摄像头后远端行先看到弯,
      * 整段等权平均会被远端提前拉偏 -> 提前打弯; 改成近端权重 1、远端权重
@@ -929,14 +1445,31 @@ float find_mid_line_weight(void)
      * 近端那样完全丢前瞻而冲出赛道)。mid_weight_ratio=1 时退化为等权平均。 */
     int top  = (int)search_top_row;
     int span = top - (int)search_end_line;
-    for(y = search_top_row; y > search_end_line; y--)
+    if(span <= 0) span = 1;
+    for(y = top; y >= (int)search_end_line; y--)
     {
-        float t = (float)(top - (int)y) / (float)span;          // 0=近端 1=远端
+        float t = (float)(top - y) / (float)span;               // 0=近端 1=远端
         float w = 1.0f - (1.0f - mid_weight_ratio) * t;         // 近端=1 远端=RATIO
-        sum  += (float)mid_line_list[y] * w;
-        wsum += w;
+        /* 可信度权重: 双侧真值行按正常权重, 单侧外推行大幅降权, 双侧都丢的行直接剔除。
+         * 远端补线的切点/斜率抖一点, 不会再被等权平均放大成中线的左右跳。 */
+        float c = (mid_conf[y] == 2) ? 1.0f : ((mid_conf[y] == 1) ? MID_CONF_SINGLE : 0.0f);
+        if(c <= 0.0f) continue;
+        sum  += (float)mid_line_list[y] * w * c;
+        wsum += w * c;
     }
-    mid = (wsum > 0.0f) ? (sum / wsum) : (float)MID_W;
+    mid = (wsum > 0.05f) ? (sum / wsum) : last_mid_line;        // 有效行太少就保持上一帧, 不用正前硬跳
+
+    // 3 帧中值滤波: 单帧的"切点跳变/假边界"会被中值直接剔除, 连续同向变化只延迟半帧
+    {
+        float a, b, c, med;
+        mid_med[mid_med_idx] = mid;
+        mid_med_idx = (uint8)((mid_med_idx + 1) % 3);
+        a = mid_med[0]; b = mid_med[1]; c = mid_med[2];
+        if((a >= b && a <= c) || (a <= b && a >= c))      med = a;
+        else if((b >= a && b <= c) || (b <= a && b >= c)) med = b;
+        else                                              med = c;
+        mid = med;
+    }
 
     // 时序限幅: 相对上一帧中线, 每帧最多变化 mid_slew 像素, 抑制噪声导致的帧间抖动(线飞)。
     // 限幅作用在"原始中线"上, 环岛偏置在后面加, 不拖慢进环打角。
@@ -944,8 +1477,9 @@ float find_mid_line_weight(void)
     if(mid < last_mid_line - (float)mid_slew) mid = last_mid_line - (float)mid_slew;
     last_mid_line = mid;                 // 存原始(未偏置)中线, 供下一帧限幅参考
 
-    // 环岛: zt4/zt5 朝环侧偏 R_BIAS(进环); zt7/zt8 离环侧偏 R_BIAS2(出环)
-    if(zt_state == ZT_RING_NEAR || zt_state == ZT_RING_FAR)
+    // 环岛: zt4 直行封口不偏置(防止提前撞环外侧); zt5 已做斜拉进环补线, R_BIAS 作为进环微调;
+    //       zt7/zt8 离环侧偏 R_BIAS2(出环)
+    if(zt_state == ZT_RING_FAR)
     {
         mid += (zt_side == 0) ? -(float)ring_bias : (float)ring_bias;
     }

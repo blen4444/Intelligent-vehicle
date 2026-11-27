@@ -87,6 +87,13 @@ int core0_main(void)
 
     init();                              // 各模块初始化(摄像头/舵机/电机/中断)
     ips200_init(IPS200_TYPE_SPI);
+#if WIFI_IMAGE_ENABLE
+    ips200_show_string(0, 0, "WIFI6B21 INIT...");
+    if(0 == wifi_image_init())
+        ips200_show_string(0, 20, "WIFI OK");
+    else
+        ips200_show_string(0, 20, "WIFI FAIL (SKIP)");
+#endif
     cpu_wait_event_ready();              // 通知 CPU1 初始化完成, 并等 CPU1 就绪
     last_status_tick = sys_tick;
     last_preview_tick = sys_tick;
@@ -124,6 +131,9 @@ int core0_main(void)
             ips200_show_gray_image(0, 0, image[0], MT9V03X_W, MT9V03X_H, 240, 153, 0);
             draw_line();
         }
+
+        // 高速 WIFI6B21-SPI 图传(CPU0 发送, 不影响 CPU1 50fps 视觉与控制)
+        wifi_image_send_task(now_tick, running);
 
         // ==================== 状态数值: 500ms 刷一次 ====================
         if(now_tick - last_status_tick >= VISION_STATUS_TICKS)

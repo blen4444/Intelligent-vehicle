@@ -147,12 +147,13 @@ static uint8 control_band_mean(const uint8 *mid, const uint8 *left,
     for(row = first; row <= last; row++)
     {
         int m = mid[row], l = left[row], r = right[row];
-        /* Ö»¾Ü¾ø "ÕâÒ»ĞĞ¸ù±¾²»ÊÇÕı³£Â·Ãæ" µÄÑù±¾¡£Ô­À´Ö»ÒªÓĞÒ»²à±ßÏßÌùµ½
-         * Í¼Ïñ±ßÔµ(l<=1 / r>=W-2)¾Í°ÑÕûĞĞÅĞ·Ï, ÓÚÊÇ³µÑØÍâÏßĞ±×ÅÈëÍäÊ±
-         * near/far Á½¶ÎÈ«²¿ÎŞĞ§ -> ÇúÂÊÇ°À¡ºÍÍäµÀ¼õËÙÍ¬Ê±¹éÁã -> ´ò¶æ¸üÍí,
-         * ÕâÕıÊÇ "¹ÕÍä¹ıÍí / Ò»Ö±×ßÍâÏß" µÄ¸ùÒò¡£ */
-        if(r - l < 8 || r - l > 170 || m < 3 || m > MT9V03X_W - 4 ||
-           image[row][m] == 0) { run = 0; continue; }
+        uint8 l_off = (l == EDGE_OFFSCREEN);
+        uint8 r_off = (r == EDGE_OFFSCREEN);
+        /* Ë«²à¶¼³öÆÁ(ÈçÔ¶¶Ë¶Ï¿ª)²ÅÕûĞĞÅĞ·Ï; ½öµ¥²à³öÆÁÊ±(ÍäµÀÍâÍÆ)²»ÔÙÄÃ 0xFF Ëã r-l,
+         * ÈÔ°´ÖĞÏßÊÇ·ñÔÚ°×ÈüµÀÄÚĞ£Ñé, ±ÜÃâÍäµÀÀï geometry_valid ¹éÁãµ¼ÖÂÇ°À¡Óë¼õËÙÊ§Ğ§¡£ */
+        if(l_off && r_off) { run = 0; continue; }
+        if(!l_off && !r_off && (r - l < 8 || r - l > 170)) { run = 0; continue; }
+        if(m < 3 || m > MT9V03X_W - 4 || image[row][m] == 0) { run = 0; continue; }
         sum += m; count++; run++;
         if(run > longest_run) longest_run = run;
     }
@@ -251,20 +252,34 @@ static void speed_loop_apply(uint8 running)
     motor_duty_R = Limit_int(0, ff_r + speed_trim(speed_tgt_R, cnt_r, &spd_trim_R, &spd_last_err_R), 5000);
 }
 
+static void control_snapshot_frame(uint8 slot, control_vision_frame *dst)
+{
+    dst->mid            = control_frames[slot].mid;
+    dst->near_mid       = control_frames[slot].near_mid;
+    dst->far_mid        = control_frames[slot].far_mid;
+    dst->geometry_valid = control_frames[slot].geometry_valid;
+    dst->error_delta    = control_frames[slot].error_delta;
+}
+
+static void turn_with_frame(float mid, float k, const control_vision_frame *frame);
+
 /* ÑØÓÃ³µÉÏµÄµç»ú½ÓÏßÓëÈí¼ş PWM Í¨µÀ¡£¿íÍäµ«½ü´¦Õı¶ÔµÄÇé¿öÏÂ²»ÔÙÏñ"ÕûÌåÆ«ÒÆ"ÄÇÑù
  * ÃÍ¼õËÙ; ¼¸ºÎÁ¿ÎŞĞ§Ê±ÍË»Ø°´ÖĞÏßÆ«²î¼õËÙµÄÀÏ¹æÔò¡£ */
 
 void control_drive_update(uint8 enabled, uint8 vision_ok)
 {
     uint8 slot = control_frame_index;
-    float mid = control_frames[slot].mid;
+    control_vision_frame snap;
+    float mid;
     int requested = base_speed, diff = 0, reduce = 0, err;
+    control_snapshot_frame(slot, &snap);
+    mid = snap.mid;
     if(enabled && vision_ok)
     {
-        if(control_frames[slot].geometry_valid)
+        if(snap.geometry_valid)
         {
-            int near_err = (int)(control_frames[slot].near_mid - MID_W);
-            int bend = (int)(control_frames[slot].far_mid - control_frames[slot].near_mid);
+            int near_err = (int)(snap.near_mid - MID_W);
+            int bend = (int)(snap.far_mid - snap.near_mid);
             int bend_reduce;
             if(near_err < 0) near_err = -near_err;
             if(bend < 0) bend = -bend;
@@ -315,8 +330,15 @@ void control_drive_update(uint8 enabled, uint8 vision_ok)
         motor_duty_R = 0;
     }
     speed_loop_apply((uint8)(enabled && vision_ok));   // ±àÂëÆ÷±Õ»·µş¼ÓÔÚÕâÀï
-    if(vision_ok) turn(mid, OPEN_TURN_K);
-    else turn(MID_W, 1.0f);
+    if(vision_ok)
+    {
+        turn_with_frame(mid, OPEN_TURN_K, &snap);
+    }
+    else
+    {
+        control_vision_frame neutral = {MID_W, MID_W, MID_W, 0, 0.0f};
+        turn_with_frame(MID_W, 1.0f, &neutral);
+    }
 }
 
 /**********************************************
@@ -333,12 +355,12 @@ int turn_last_value(void)                               // ¶æ»úÖ¸Áî(Ïà¶ÔÖĞÖµ), Æ
     return steer_last;
 }
 
-void turn(float mid, float k)
+static void turn_with_frame(float mid, float k, const control_vision_frame *frame)
 {
     float err     = MID_W - mid;                        // >0: ÈüµÀÔÚ×ó²à
     float abs_err = (err < 0.0f) ? -err : err;
     float spd     = (float)base_speed / 400.0f;         // 400 µµ -> 1.0, 1200 µµ -> 3.0
-    float damping = control_frames[control_frame_index].error_delta;
+    float damping = frame->error_delta;
     float k_speed, center, k_eff, d_term, target;
     int   final_duty;
 
@@ -353,9 +375,9 @@ void turn(float mid, float k)
      * ·ñÔòÈëÍäÇ°¶Î¶æÁ¿²»×ã, ³µ±»ÍÆµ½Íâ²àÏß²Å¿ªÊ¼×ª -> ×ªÍäÑ¹Ïß¡£
      * Ô¶¶ËÖĞÏßÒÑ¾­Æ«³öÊ±ËµÃ÷Ç°·½ÊÇÍä, ´ËÊ±²»ÔÙ°´µ±Ç°Æ«²îËõĞ¡ÔöÒæ¡£
      * ÓÃ far-near µÄ²îÖµÅĞ¶ÏÇ°·½ÍäÏò, ±ÜÃâÄ³ĞĞË²Ê±ÖµÍ»È»Ìø±ä¡£ */
+    if(frame->geometry_valid)
     {
-        int bend = (int)(control_frames[control_frame_index].far_mid -
-                         control_frames[control_frame_index].near_mid);
+        int bend = (int)(frame->far_mid - frame->near_mid);
         float bend_ratio;
         if(bend < 0) bend = -bend;
         bend_ratio = (float)bend / STEER_KNEE_ERR;
@@ -375,9 +397,9 @@ void turn(float mid, float k)
      *    Ö»ÔÚÆ«²îÍ¬ÏòÊ±Ô¤´ò¶æ: ÈëÍäÇ°³µ»¹Ã»Æ«³öÈ¥, err ºÜĞ¡ -> ÖĞĞÄÈí»¯ -> ·´À¡À´²»¼°¸ø¶æ,
      *    ÕâÊÇ"×ªÍäÑ¹Ïß"µÄÖ±½ÓÔ­Òò(Êµ²â: Æ«²î 4px Ê±ÖĞĞÄÈí»¯ºóÖ»¸ø 2~4 ¸ñ¶æ)¡£
      *    ÕâÀï°´Ç°Õ°»¡¶ÈÖ±½ÓÔ¤´òÒ»¸öÁ¿, ²»ÔÙµÈÆ«²î³¤´óÔÙ²¹, Ö±µ½¶æ»úÏŞ·ù/ÏŞËÙ°Ñ¶æ·â¶¥¡£ */
+    if(frame->geometry_valid)
     {
-        float bend_f = (float)control_frames[control_frame_index].near_mid -
-                       (float)control_frames[control_frame_index].far_mid;   // >0: near Óë far Ö®²î, ÓÃÓÚÅĞ¶¨Ç°·½ÍäÏò
+        float bend_f = (float)frame->near_mid - (float)frame->far_mid;   // >0: near Óë far Ö®²î, ÓÃÓÚÅĞ¶¨Ç°·½ÍäÏò
         float mag = (bend_f < 0.0f) ? -bend_f : bend_f;
         if(mag > STEER_FF_DEAD)
         {
@@ -402,4 +424,11 @@ void turn(float mid, float k)
                            duoji_mid + steer_last,
                            duoji_mid + turn_right_duoji_limit);
     pwm_set_duty(duoji_jiao, final_duty);
+}
+
+void turn(float mid, float k)
+{
+    control_vision_frame snap;
+    control_snapshot_frame(control_frame_index, &snap);
+    turn_with_frame(mid, k, &snap);
 }
