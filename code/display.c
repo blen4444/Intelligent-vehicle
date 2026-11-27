@@ -8,18 +8,6 @@
 #include "display.h"
 #include "image.h"
 
-// 画一个红色小十字, 用于标记切点/圆环点
-static void mark_cross(uint16 x, uint16 y)
-{
-    uint16 x0 = (x > 3) ? (uint16)(x - 3) : 0;
-    uint16 x1 = x + 3;
-    uint16 y0 = (y > 3) ? (uint16)(y - 3) : 0;
-    uint16 y1 = y + 3;
-    if(x1 >= ips200_width_max)  x1 = (uint16)(ips200_width_max - 1);
-    if(y1 >= ips200_height_max) y1 = (uint16)(ips200_height_max - 1);
-    ips200_draw_line(x0, y, x1, y, RGB565_RED);
-    ips200_draw_line(x, y0, x, y1, RGB565_RED);
-}
 /*********************************************************************
  函数功能：边线和中线显示
  函数名称：void draw_line(void)
@@ -61,49 +49,6 @@ static void mark_cross(uint16 x, uint16 y)
              uint16 x1 = (uint16)(x + 2);
              if(x1 >= w) x1 = (uint16)(w - 1);
              ips200_draw_line(x0, yy, x1, yy, RGB565_RED);
-         }
-     }
-
-     // ==================== 切点 / 圆环点 红色标记 ====================
-     {
-         uint16 x, y;
-         // 切线外推中的切点(红色小十字)
-         if(tangent_point_l_active)
-         {
-             x = (uint16)(DISPLAY_SCALE * tangent_point_lx + 0.5f);
-             y = (uint16)(DISPLAY_SCALE * tangent_point_ly + 0.5f);
-             if(x >= w) x = (uint16)(w - 1);
-             if(y >= h) y = (uint16)(h - 1);
-             mark_cross(x, y);
-         }
-         if(tangent_point_r_active)
-         {
-             x = (uint16)(DISPLAY_SCALE * tangent_point_rx + 0.5f);
-             y = (uint16)(DISPLAY_SCALE * tangent_point_ry + 0.5f);
-             if(x >= w) x = (uint16)(w - 1);
-             if(y >= h) y = (uint16)(h - 1);
-             mark_cross(x, y);
-         }
-         // 环岛三拐点(拐点1/2/3) + 拉线
-         if(ring_c1_ok || ring_c2_ok || ring_c3_ok)
-         {
-             uint16 ax = (uint16)(DISPLAY_SCALE * ring_c1_x + 0.5f);
-             uint16 ay = (uint16)(DISPLAY_SCALE * ring_c1_y + 0.5f);
-             uint16 bx = (uint16)(DISPLAY_SCALE * ring_c2_x + 0.5f);
-             uint16 by = (uint16)(DISPLAY_SCALE * ring_c2_y + 0.5f);
-             uint16 cx = (uint16)(DISPLAY_SCALE * ring_c3_x + 0.5f);
-             uint16 cy = (uint16)(DISPLAY_SCALE * ring_c3_y + 0.5f);
-             if(ax >= w) ax = (uint16)(w - 1);
-             if(ay >= h) ay = (uint16)(h - 1);
-             if(bx >= w) bx = (uint16)(w - 1);
-             if(by >= h) by = (uint16)(h - 1);
-             if(cx >= w) cx = (uint16)(w - 1);
-             if(cy >= h) cy = (uint16)(h - 1);
-             if(ring_c1_ok && ring_c2_ok) ips200_draw_line(ax, ay, bx, by, RGB565_RED);  // 拐点1-拐点2 拉线
-             if(ring_c2_ok && ring_c3_ok) ips200_draw_line(bx, by, cx, cy, RGB565_RED);  // 拐点2-拐点3
-             if(ring_c1_ok) mark_cross(ax, ay);
-             if(ring_c2_ok) mark_cross(bx, by);
-             if(ring_c3_ok) mark_cross(cx, cy);
          }
      }
 }
@@ -152,15 +97,6 @@ static const tune_item_struct tune_items[] =
     {"LOST",     &lost_extra,         1, 0, 0.0f,  20.0f,  1.00f},
     {"M_SLEW",   &mid_slew,           1, 0, 2.0f,  40.0f,  1.00f},
     {"MW_RATIO", &mid_weight_ratio,   0, 2, 0.05f, 1.00f,  0.05f},
-    {"R_LOSS",   &ring_loss_min,      1, 0, 10.0f, 80.0f,  1.00f},
-    {"NEAR_ROW", &zt_near_row,        1, 0, 60.0f, 118.0f, 1.00f},
-    {"IN_STEP",  &zt_in_step,         1, 0, 100.0f, 5000.0f, 50.0f},
-    {"OUT_STEP", &zt_out_step,        1, 0, 100.0f, 3000.0f, 50.0f},
-    {"W_JUMP",   &zt_width_jump,      1, 0, 10.0f, 80.0f,  1.00f},
-    {"CURVE",    &zt_curve_bend,      1, 0, 5.0f,  60.0f,  1.00f},
-    {"R_BIAS",   &ring_bias,          1, 0, 0.0f,  30.0f,  1.00f},
-    {"R_BIAS2",  &ring_bias2,         1, 0, 0.0f,  30.0f,  1.00f},
-    {"C_LOSS",   &cross_loss_min,     1, 0, 10.0f, 60.0f,  1.00f},
 };
 #define TUNE_ITEM_NUM   ((uint8)(sizeof(tune_items) / sizeof(tune_items[0])))
 

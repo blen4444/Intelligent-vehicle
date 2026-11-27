@@ -92,7 +92,6 @@ extern volatile int   enc_k_L;          // 学习的"满占空比计数"
 extern volatile int   enc_k_R;
 extern volatile int   speed_tgt_L;      // 目标计数
 extern volatile int   speed_tgt_R;
-extern volatile int32 enc_travel;       // 编码器累计里程(每5ms累加左右平均计数), 供环岛 FSM 计步
 extern volatile uint8 status_page;      // 屏幕页: 0=视觉 1=编码器 2=调参菜单
 
 #define SW_PWM_STEPS 50                 // 软件 PWM 50 档, 100us 一档 -> 200Hz, 分辨率 2%

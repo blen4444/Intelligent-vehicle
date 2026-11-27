@@ -49,8 +49,8 @@ static void vision_status_labels(void)
     ips200_show_string(112, 265, "dt:");
     ips200_show_string(0, 285, "drop:");
     ips200_show_string(112, 285, "PIT:");
-    ips200_show_string(0, 304, "zt:");
-    ips200_show_string(100, 304, "sg:");
+    ips200_show_string(0, 304, "bend:");
+    ips200_show_string(82, 304, "sv:");
     ips200_show_string(165, 304, "top:");
 }
 
@@ -181,8 +181,8 @@ int core0_main(void)
                 ips200_show_int(144, 265, (int32)shown_interval_us, 6);
                 ips200_show_int(40, 285, (int32)vision_copy_reject_count, 5);
                 ips200_show_int(144, 285, sw_isr_rate, 2);
-                ips200_show_int(40, 304, zt_state, 1);
-                ips200_show_int(140, 304, cross_state, 1);
+                ips200_show_int(44, 304, (int32)control_bend_dbg, 3);
+                ips200_show_int(110, 304, (int32)turn_last_value(), 4);
                 ips200_show_int(205, 304, search_top_row, 3);
             }
             else if(status_page == 1)        // µÚ 2 Ò³: ±àÂëÆ÷ / ±Õ»·

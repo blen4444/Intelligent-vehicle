@@ -54,7 +54,6 @@ IFX_INTERRUPT(cc60_pit_ch0_isr, 0, CCU6_0_CH0_ISR_PRIORITY)
     Encoder_Data_Get();
     enc_cnt_L = motor_l.encoder_speed;
     enc_cnt_R = motor_r.encoder_speed;
-    enc_travel += (enc_cnt_L + enc_cnt_R) / 2;     // 累计里程, 供环岛 FSM 计步
 
     // 每5ms统计一次软件PWM中断次数: 正常应为 50 (100us一步)
     {

@@ -180,7 +180,7 @@ void wifi_image_send_task(uint32 now_tick, uint8 running)
 
 #if WIFI_IMAGE_SEND_OSCILLOSCOPE
     wifi_osc_buf[0] = final_mid_line;
-    wifi_osc_buf[1] = (float)zt_state;
+    wifi_osc_buf[1] = (float)turn_last_value();
     wifi_osc_buf[2] = (float)img_threshold;
     wifi_osc_buf[3] = (float)enc_cnt_L;
     wifi_osc_buf[4] = (float)enc_cnt_R;

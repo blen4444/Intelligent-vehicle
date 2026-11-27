@@ -90,7 +90,6 @@ volatile int   enc_cnt_L = 0;
 volatile int   enc_cnt_R = 0;
 volatile int   enc_k_L   = ENC_K_DEFAULT;
 volatile int   enc_k_R   = ENC_K_DEFAULT;
-volatile int32 enc_travel = 0;          // 编码器累计里程(环岛 FSM 计步)
 volatile int   speed_tgt_L = 0;
 volatile int   speed_tgt_R = 0;
 volatile uint8 status_page = 0;
